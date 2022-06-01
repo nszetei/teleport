@@ -129,23 +129,36 @@ $ sudo mv teleport-slack.toml /etc
 
 #### Editing the config file
 
-In the Teleport section, use the identity file(s) you generated with `tctl auth sign`. The plugin installer creates a folder for those files in `/var/lib/teleport/plugins/slack/`. 
+In the Teleport section, use the identity file(s) you generated with `tctl auth sign`. The plugin installer creates a folder for those files in `/var/lib/teleport/plugins/slack/`.
 
-Move the certificates to this folder, then edit the configuration file (`teleport-slack.toml`) based on the reference below to ensure that the appropriate settings point to your identity file(s). 
+Move the certificates to this folder, then edit the configuration file (`teleport-slack.toml`) based on the reference below to ensure that the appropriate settings point to your identity file(s).
 
 <Tabs>
-  <TabItem label="OpenSource, Enterprise" scope={["oss","enterprise"]}>
+<TabItem label="OpenSource, Enterprise" scope={["oss","enterprise"]}>
 ```conf
 (!examples/resources/plugins/teleport-slack.toml!)
 ```
 </TabItem>
 
-  <TabItem label="Cloud" scope={["cloud"]}>
+<TabItem label="Cloud" scope={["cloud"]}>
 
 ```conf
 (!examples/resources/plugins/teleport-slack-proxy.toml!)
 ```
 </TabItem>
+<TabItem label="Cloud" scope={["oss","enterprise","cloud"]}>
+
+```conf
+(!examples/resources/plugins/teleport-slack-helm.toml!)
+```
+</TabItem>
+
+Use the following command to create a Kubernetes secret from the identity file
+generated above:
+
+```code
+kubectl create secret generic teleport-slack-identity --from-file=auth_id=identity
+```
 </Tabs>
 
 ## Test run
