@@ -337,6 +337,9 @@ const (
 	// Endpoint is an optional Host for non-AWS S3
 	Endpoint = "endpoint"
 
+	// UseFIPSEndpoint allows toggling FIPS endpoints for AWS S3/Dynamo
+	UseFIPSEndpoint = "use_fips_endpoint"
+
 	// Insecure is an optional switch to use HTTP instead of HTTPS
 	Insecure = "insecure"
 

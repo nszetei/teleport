@@ -27,8 +27,11 @@ import (
 	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go/aws/endpoints"
 
 	"github.com/gravitational/teleport"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
@@ -109,11 +112,6 @@ type Config struct {
 	// Endpoint is an optional non-AWS endpoint
 	Endpoint string `json:"endpoint,omitempty"`
 
-	// EnableContinuousBackups is used to enable PITR (Point-In-Time Recovery).
-	EnableContinuousBackups bool
-
-	// EnableAutoScaling is used to enable auto scaling policy.
-	EnableAutoScaling bool
 	// ReadMaxCapacity is the maximum provisioned read capacity.
 	ReadMaxCapacity int64
 	// ReadMinCapacity is the minimum provisioned read capacity.
@@ -126,12 +124,36 @@ type Config struct {
 	WriteMinCapacity int64
 	// WriteTargetValue is the ratio of consumed write to provisioned capacity.
 	WriteTargetValue float64
+
+	// UseFIPSEndpoint uses AWS FedRAMP/FIPS 140-2 mode endpoints. This is a pointer because AWS uses three states
+	// to determine its behavior:
+	// Unset - allows environment variables or AWS config to set the value
+	// Enabled - explicitly enable
+	// Disabled - explicitly disable
+	UseFIPSEndpoint *bool
+
+	// EnableContinuousBackups is used to enable PITR (Point-In-Time Recovery).
+	EnableContinuousBackups bool
+
+	// EnableAutoScaling is used to enable auto scaling policy.
+	EnableAutoScaling bool
 }
 
 // SetFromURL sets values on the Config from the supplied URI
 func (cfg *Config) SetFromURL(in *url.URL) error {
 	if endpoint := in.Query().Get(teleport.Endpoint); endpoint != "" {
 		cfg.Endpoint = endpoint
+	}
+
+	const boolErrorTemplate = "failed to parse URI %q flag %q - %q, supported values are 'true' or 'false'"
+	if val := in.Query().Get(teleport.UseFIPSEndpoint); val != "" {
+		useFips, err := strconv.ParseBool(val)
+		if err != nil {
+			return trace.BadParameter(boolErrorTemplate, in.String(), teleport.UseFIPSEndpoint, val)
+		}
+		cfg.UseFIPSEndpoint = &useFips
+	} else {
+		cfg.UseFIPSEndpoint = nil
 	}
 
 	return nil
@@ -263,6 +285,17 @@ func New(ctx context.Context, cfg Config, backend backend.Backend) (*Log, error)
 	// "audit_events_uri". This is for non-AWS DynamoDB-compatible backends.
 	if cfg.Endpoint != "" {
 		b.session.Config.Endpoint = aws.String(cfg.Endpoint)
+	}
+
+	// Explicitly enable or disable FIPS endpoints for DynamoDB
+	if cfg.UseFIPSEndpoint != nil {
+		if *cfg.UseFIPSEndpoint {
+			b.session.Config.UseFIPSEndpoint = endpoints.FIPSEndpointStateEnabled
+		} else {
+			b.session.Config.UseFIPSEndpoint = endpoints.FIPSEndpointStateDisabled
+		}
+	} else {
+		b.session.Config.UseFIPSEndpoint = endpoints.FIPSEndpointStateUnset
 	}
 
 	// create DynamoDB service:

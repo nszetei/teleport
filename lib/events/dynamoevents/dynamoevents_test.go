@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -280,4 +281,36 @@ func (s *DynamoeventsLargeTableSuite) TestEmitAuditEventForLargeEvents(c *check.
 	}
 	err = s.Log.EmitAuditEvent(ctx, appReqEvent)
 	c.Check(trace.Unwrap(err), check.FitsTypeOf, errAWSValidation)
+}
+
+func TestConfig_SetFromURL(t *testing.T) {
+
+	// note that these configuration values and combinations do not necessarily make sense; should they be disallowed?
+
+	parsedURL, err := url.Parse("dynamodb://event_table_name?use_fips_endpoint=true")
+	require.NoError(t, err)
+
+	cfg := &Config{}
+
+	err = cfg.SetFromURL(parsedURL)
+	require.NoError(t, err)
+
+	require.EqualValues(t, true, *cfg.UseFIPSEndpoint)
+
+	parsedURL, err = url.Parse("dynamodb://event_table_name?use_fips_endpoint=false&endpoint=dynamo.example.com")
+	require.NoError(t, err)
+
+	err = cfg.SetFromURL(parsedURL)
+	require.NoError(t, err)
+
+	require.EqualValues(t, false, *cfg.UseFIPSEndpoint)
+	require.EqualValues(t, "dynamo.example.com", cfg.Endpoint)
+
+	parsedURL, err = url.Parse("dynamodb://event_table_name")
+	require.NoError(t, err)
+
+	err = cfg.SetFromURL(parsedURL)
+	require.NoError(t, err)
+
+	require.Nil(t, cfg.UseFIPSEndpoint)
 }

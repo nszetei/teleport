@@ -1052,8 +1052,14 @@ func adminCreds() (*int, *int, error) {
 	return &uid, &gid, nil
 }
 
+type initCfg struct {
+	AuditConfig types.ClusterAuditConfig
+	FIPS        bool
+}
+
 // initUploadHandler initializes upload handler based on the config settings,
-func initUploadHandler(ctx context.Context, auditConfig types.ClusterAuditConfig, dataDir string) (events.MultipartHandler, error) {
+func initUploadHandler(ctx context.Context, cfg *initCfg, dataDir string) (events.MultipartHandler, error) {
+	auditConfig := cfg.AuditConfig
 	if !auditConfig.ShouldUploadSessions() {
 		recordsDir := filepath.Join(dataDir, events.RecordsDir)
 		if err := os.MkdirAll(recordsDir, teleport.SharedDirMode); err != nil {
@@ -1085,9 +1091,16 @@ func initUploadHandler(ctx context.Context, auditConfig types.ClusterAuditConfig
 		return handler, nil
 	case teleport.SchemeS3:
 		config := s3sessions.Config{}
+
 		if err := config.SetFromURL(uri, auditConfig.Region()); err != nil {
 			return nil, trace.Wrap(err)
 		}
+
+		if cfg.FIPS {
+			config.UseFIPSEndpoint = new(bool)
+			*config.UseFIPSEndpoint = true
+		}
+
 		handler, err := s3sessions.NewHandler(ctx, config)
 		if err != nil {
 			return nil, trace.Wrap(err)
@@ -1113,7 +1126,8 @@ func initUploadHandler(ctx context.Context, auditConfig types.ClusterAuditConfig
 
 // initExternalLog initializes external storage, if the storage is not
 // setup, returns (nil, nil).
-func initExternalLog(ctx context.Context, auditConfig types.ClusterAuditConfig, log logrus.FieldLogger, backend backend.Backend) (events.IAuditLog, error) {
+func initExternalLog(ctx context.Context, conf *initCfg, log logrus.FieldLogger, backend backend.Backend) (events.IAuditLog, error) {
+	auditConfig := conf.AuditConfig
 	var hasNonFileLog bool
 	var loggers []events.IAuditLog
 	for _, eventsURI := range auditConfig.AuditEventsURIs() {
@@ -1149,9 +1163,15 @@ func initExternalLog(ctx context.Context, auditConfig types.ClusterAuditConfig, 
 				WriteTargetValue:        auditConfig.WriteTargetValue(),
 				RetentionPeriod:         auditConfig.RetentionPeriod(),
 			}
+
 			err = cfg.SetFromURL(uri)
 			if err != nil {
 				return nil, trace.Wrap(err)
+			}
+
+			if conf.FIPS {
+				cfg.UseFIPSEndpoint = new(bool)
+				*cfg.UseFIPSEndpoint = true
 			}
 
 			logger, err := dynamoevents.New(ctx, cfg, backend)
@@ -1239,10 +1259,12 @@ func (process *TeleportProcess) initAuthService() error {
 				"This is dangerous, you will not be able to save and playback sessions."
 			process.log.Warn(warningMessage)
 		}
-
-		auditConfig := cfg.Auth.AuditConfig
+		handlerCfg := &initCfg{
+			AuditConfig: cfg.Auth.AuditConfig,
+			FIPS:        cfg.FIPS,
+		}
 		uploadHandler, err = initUploadHandler(
-			process.ExitContext(), auditConfig, filepath.Join(cfg.DataDir, teleport.LogsDir))
+			process.ExitContext(), handlerCfg, filepath.Join(cfg.DataDir, teleport.LogsDir))
 		if err != nil {
 			if !trace.IsNotFound(err) {
 				return trace.Wrap(err)
@@ -1256,7 +1278,7 @@ func (process *TeleportProcess) initAuthService() error {
 		}
 		// initialize external loggers.  may return (nil, nil) if no
 		// external loggers have been defined.
-		externalLog, err := initExternalLog(process.ExitContext(), auditConfig, process.log, process.backend)
+		externalLog, err := initExternalLog(process.ExitContext(), handlerCfg, process.log, process.backend)
 		if err != nil {
 			if !trace.IsNotFound(err) {
 				return trace.Wrap(err)

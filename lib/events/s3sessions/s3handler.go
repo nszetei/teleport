@@ -27,6 +27,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/endpoints"
+
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/session"
 
@@ -65,12 +67,8 @@ type Config struct {
 	Region string
 	// Path is an optional bucket path
 	Path string
-	// Host is an optional third party S3 compatible endpoint
+	// Endpoint is an optional third party S3 compatible endpoint
 	Endpoint string
-	// Insecure is an optional switch to opt out of https connections
-	Insecure bool
-	//DisableServerSideEncryption is an optional switch to opt out of SSE in case the provider does not support it
-	DisableServerSideEncryption bool
 	// ACL is the canned ACL to send to S3
 	ACL string
 	// Session is an optional existing AWS client session
@@ -79,6 +77,18 @@ type Config struct {
 	Credentials *credentials.Credentials
 	// SSEKMSKey specifies the optional custom CMK used for KMS SSE.
 	SSEKMSKey string
+
+	// UseFIPSEndpoint uses AWS FedRAMP/FIPS 140-2 mode endpoints. This is a pointer because AWS uses three states
+	// to determine its behavior:
+	// Unset - allows environment variables or AWS config to set the value
+	// Enabled - explicitly enable
+	// Disabled - explicitly disable
+	UseFIPSEndpoint *bool
+
+	// Insecure is an optional switch to opt out of https connections
+	Insecure bool
+	//DisableServerSideEncryption is an optional switch to opt out of SSE in case the provider does not support it
+	DisableServerSideEncryption bool
 }
 
 // SetFromURL sets values on the Config from the supplied URI
@@ -90,17 +100,20 @@ func (s *Config) SetFromURL(in *url.URL, inRegion string) error {
 	if endpoint := in.Query().Get(teleport.Endpoint); endpoint != "" {
 		s.Endpoint = endpoint
 	}
+
+	const boolErrorTemplate = "failed to parse URI %q flag %q - %q, supported values are 'true' or 'false'"
 	if val := in.Query().Get(teleport.Insecure); val != "" {
+		log.Debug(val)
 		insecure, err := strconv.ParseBool(val)
 		if err != nil {
-			return trace.BadParameter("failed to parse URI %q flag %q - %q, supported values are 'true' or 'false'", in.String(), teleport.Insecure, val)
+			return trace.BadParameter(boolErrorTemplate, in.String(), teleport.Insecure, val)
 		}
 		s.Insecure = insecure
 	}
 	if val := in.Query().Get(teleport.DisableServerSideEncryption); val != "" {
 		disableServerSideEncryption, err := strconv.ParseBool(val)
 		if err != nil {
-			return trace.BadParameter("failed to parse URI %q flag %q - %q, supported values are 'true' or 'false'", in.String(), teleport.DisableServerSideEncryption, val)
+			return trace.BadParameter(boolErrorTemplate, in.String(), teleport.DisableServerSideEncryption, val)
 		}
 		s.DisableServerSideEncryption = disableServerSideEncryption
 	}
@@ -110,9 +123,20 @@ func (s *Config) SetFromURL(in *url.URL, inRegion string) error {
 		}
 		s.ACL = acl
 	}
-	if val := in.Query().Get(teleport.SSEKMSKey); val != "" {
-		s.SSEKMSKey = val
+	if sseKmsKey := in.Query().Get(teleport.SSEKMSKey); sseKmsKey != "" {
+		s.SSEKMSKey = sseKmsKey
 	}
+
+	if val := in.Query().Get(teleport.UseFIPSEndpoint); val != "" {
+		useFips, err := strconv.ParseBool(val)
+		if err != nil {
+			return trace.BadParameter(boolErrorTemplate, in.String(), teleport.UseFIPSEndpoint, val)
+		}
+		s.UseFIPSEndpoint = &useFips
+	} else {
+		s.UseFIPSEndpoint = nil
+	}
+
 	s.Region = region
 	s.Bucket = in.Host
 	s.Path = in.Path
@@ -148,6 +172,17 @@ func (s *Config) CheckAndSetDefaults() error {
 		if s.Credentials != nil {
 			sess.Config.Credentials = s.Credentials
 		}
+
+		if s.UseFIPSEndpoint != nil {
+			if *s.UseFIPSEndpoint {
+				sess.Config.UseFIPSEndpoint = endpoints.FIPSEndpointStateEnabled
+			} else {
+				sess.Config.UseFIPSEndpoint = endpoints.FIPSEndpointStateDisabled
+			}
+		} else {
+			sess.Config.UseFIPSEndpoint = endpoints.FIPSEndpointStateUnset
+		}
+
 		s.Session = sess
 	}
 	return nil

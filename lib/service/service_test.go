@@ -290,8 +290,8 @@ func TestServiceInitExternalLog(t *testing.T) {
 				AuditEventsURI: tt.events,
 			})
 			require.NoError(t, err)
-
-			loggers, err := initExternalLog(context.Background(), auditConfig, logrus.New(), backend)
+			cfg := &initCfg{AuditConfig: auditConfig, FIPS: false}
+			loggers, err := initExternalLog(context.Background(), cfg, logrus.New(), backend)
 			if tt.isErr {
 				require.Error(t, err)
 			} else {
