@@ -10,40 +10,23 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"golang.org/x/tools/go/ast/astutil"
 )
 
-type AuditEventEmitCollection struct {
-	Calls []*ast.SelectorExpr
-	mu    *sync.Mutex
-}
-
-func (a *AuditEventEmitCollection) addEmitCall(c *ast.SelectorExpr) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.Calls = append(a.Calls, c)
-}
-
-// TODO: Change addEmitCall so it records the args as well. Maybe make Calls a slice of some type rather than *ast.SelectorExpr.
-
 func main() {
-	col := AuditEventEmitCollection{
-		Calls: []*ast.SelectorExpr{},
-		mu:    &sync.Mutex{},
-	}
 	s := token.NewFileSet()
 	filepath.Walk(path.Join("..", ".."), func(pth string, i fs.FileInfo, err error) error {
 		if strings.HasSuffix(i.Name(), ".go") {
 			f, err := parser.ParseFile(s, pth, nil, 0)
 			for _, d := range f.Decls {
 				astutil.Apply(d, func(c *astutil.Cursor) bool {
-					if i, ok := c.Node().(*ast.CallExpr); ok {
-						if e, ok := i.Fun.(*ast.SelectorExpr); ok && e.Sel.Name == "EmitAuditEvent" {
-							col.addEmitCall(e)
+					if m, ok := c.Node().(*ast.CompositeLit); ok {
+						if e, ok := m.Type.(*ast.SelectorExpr); ok && e.Sel.Name == "Metadata" {
+							if v, ok := e.X.(*ast.Ident); ok && strings.HasSuffix(v.Name, "events") {
+								fmt.Printf("this is a Metadata: %+v\n", m)
+							}
 						}
-
 					}
 					return true
 				}, nil)
