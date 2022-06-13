@@ -32,6 +32,9 @@ import (
 )
 
 func (process *TeleportProcess) initDatabases() {
+	// TODO: There's a bug here. If the Teleport config has databases enabled
+	// but no databases are configured, systems waiting for TeleportReadyEvent
+	// will be virtue of the EventMapping will hang forever e.g (ca rotation)
 	if len(process.Config.Databases.Databases) == 0 &&
 		len(process.Config.Databases.ResourceMatchers) == 0 &&
 		len(process.Config.Databases.AWSMatchers) == 0 {

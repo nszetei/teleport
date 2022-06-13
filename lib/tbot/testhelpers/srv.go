@@ -134,6 +134,7 @@ func MakeAndRunTestAuthServer(t *testing.T, fc *config.FileConfig, fds []service
 	require.NoError(t, auth.Start())
 
 	t.Cleanup(func() {
+		cfg.Log.Info("Cleaning up Auth Server.")
 		auth.Close()
 	})
 

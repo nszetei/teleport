@@ -80,7 +80,7 @@ func (rd *debouncer) attempt() {
 	})
 }
 
-const caWatchRetryLimit = 10
+const caWatchRetryLimit = 15
 
 // caRotationLoop continually triggers `watchCARotations` until the context is
 // cancelled. This allows the watcher to be re-established if an error occurs.
@@ -108,7 +108,7 @@ func (b *Bot) caRotationLoop(ctx context.Context) error {
 	jitter := libUtils.NewJitter()
 
 	for ctx.Err() == nil {
-		for attempt := 1; attempt >= caWatchRetryLimit; attempt++ {
+		for attempt := 1; attempt <= caWatchRetryLimit; attempt++ {
 			err := b.watchCARotations(ctx, rd.attempt)
 			if err == nil || ctx.Err() != nil {
 				break
