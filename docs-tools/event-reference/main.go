@@ -22,7 +22,7 @@ type EventData struct {
 func main() {
 	eventTypes := make(map[string]struct{})
 	gofiles := []*ast.File{}
-	// eventData := []EventData{}
+	eventData := []EventData{}
 
 	s := token.NewFileSet()
 	filepath.Walk(path.Join("..", ".."), func(pth string, i fs.FileInfo, err error) error {
@@ -105,6 +105,10 @@ func main() {
 						// TODO: Add information re: the event type
 						// to the eventData slice.
 						fmt.Println("yay a match for: " + n.Name)
+						eventData = append(eventData, EventData{
+							Name:    val.Values[0].(*ast.BasicLit).Value,
+							Comment: val.Comment.Text(),
+						})
 					}
 				}
 				return true
@@ -112,4 +116,5 @@ func main() {
 		}
 	}
 
+	fmt.Println(eventData)
 }
