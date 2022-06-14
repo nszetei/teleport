@@ -82,6 +82,7 @@ import (
 	restricted "github.com/gravitational/teleport/lib/restrictedsession"
 	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/services/local"
 	"github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/srv"
 	"github.com/gravitational/teleport/lib/srv/alpnproxy"
@@ -654,6 +655,12 @@ func NewTeleport(cfg *Config, opts ...NewTeleportOption) (*TeleportProcess, erro
 		return nil, trace.Wrap(err, "configuration error")
 	}
 
+	processID := fmt.Sprintf("%v", nextProcessID())
+	cfg.Log = utils.WrapLogger(cfg.Log.WithFields(logrus.Fields{
+		trace.Component: teleport.Component(teleport.ComponentProcess, processID),
+		"pid":           fmt.Sprintf("%v.%v", os.Getpid(), processID),
+	}))
+
 	// If FIPS mode was requested make sure binary is build against BoringCrypto.
 	if cfg.FIPS {
 		if !modules.GetModules().IsBoringBinary() {
@@ -746,7 +753,6 @@ func NewTeleport(cfg *Config, opts ...NewTeleportOption) (*TeleportProcess, erro
 		cfg.AuthServers = []utils.NetAddr{cfg.Auth.SSHAddr}
 	}
 
-	processID := fmt.Sprintf("%v", nextProcessID())
 	supervisor := NewSupervisor(processID, cfg.Log)
 	storage, err := auth.NewProcessStorage(supervisor.ExitContext(), filepath.Join(cfg.DataDir, teleport.ComponentProcess))
 	if err != nil {
@@ -776,7 +782,7 @@ func NewTeleport(cfg *Config, opts ...NewTeleportOption) (*TeleportProcess, erro
 		ec2Hostname, err := imClient.GetTagValue(supervisor.ExitContext(), types.EC2HostnameTag)
 		if err == nil {
 			if ec2Hostname != "" {
-				cfg.Log.Info("Found %q tag in EC2 instance. Using %q as hostname.", types.EC2HostnameTag, ec2Hostname)
+				cfg.Log.Infof("Found %q tag in EC2 instance. Using %q as hostname.", types.EC2HostnameTag, ec2Hostname)
 				cfg.Hostname = ec2Hostname
 			}
 		} else if !trace.IsNotFound(err) {
@@ -817,6 +823,7 @@ func NewTeleport(cfg *Config, opts ...NewTeleportOption) (*TeleportProcess, erro
 		importedDescriptors: cfg.FileDescriptors,
 		storage:             storage,
 		id:                  processID,
+		log:                 cfg.Log,
 		keyPairs:            make(map[keyPairKey]KeyPair),
 		appDependCh:         make(chan Event, 1024),
 		cloudLabels:         cloudLabels,
@@ -824,10 +831,6 @@ func NewTeleport(cfg *Config, opts ...NewTeleportOption) (*TeleportProcess, erro
 	}
 
 	process.registerAppDepend()
-
-	process.log = cfg.Log.WithFields(logrus.Fields{
-		trace.Component: teleport.Component(teleport.ComponentProcess, process.id),
-	})
 
 	serviceStarted := false
 
@@ -1333,7 +1336,6 @@ func (process *TeleportProcess) initAuthService() error {
 		OIDCConnectors:          cfg.OIDCConnectors,
 		AuditLog:                process.auditLog,
 		CipherSuites:            cfg.CipherSuites,
-		CASigningAlg:            cfg.CASignatureAlgorithm,
 		KeyStoreConfig:          cfg.Auth.KeyStore,
 		Emitter:                 checkingEmitter,
 		Streamer:                events.NewReportingStreamer(checkingStreamer, process.Config.UploadEventsC),
@@ -1680,31 +1682,33 @@ func (process *TeleportProcess) newAccessCache(cfg accessCacheConfig) (*cache.Ca
 	reporter, err := backend.NewReporter(backend.ReporterConfig{
 		Component: teleport.ComponentCache,
 		Backend:   mem,
+		Tracer:    process.TracingProvider.Tracer(teleport.ComponentCache),
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
 	return cache.New(cfg.setup(cache.Config{
-		Context:         process.ExitContext(),
-		Backend:         reporter,
-		Events:          cfg.services,
-		ClusterConfig:   cfg.services,
-		Provisioner:     cfg.services,
-		Trust:           cfg.services,
-		Users:           cfg.services,
-		Access:          cfg.services,
-		DynamicAccess:   cfg.services,
-		Presence:        cfg.services,
-		Restrictions:    cfg.services,
-		Apps:            cfg.services,
-		Databases:       cfg.services,
-		AppSession:      cfg.services,
-		WindowsDesktops: cfg.services,
-		WebSession:      cfg.services.WebSessions(),
-		WebToken:        cfg.services.WebTokens(),
-		Component:       teleport.Component(append(cfg.cacheName, process.id, teleport.ComponentCache)...),
-		MetricComponent: teleport.Component(append(cfg.cacheName, teleport.ComponentCache)...),
+		Context:          process.ExitContext(),
+		Backend:          reporter,
+		Events:           cfg.services,
+		ClusterConfig:    cfg.services,
+		Provisioner:      cfg.services,
+		Trust:            cfg.services,
+		Users:            cfg.services,
+		Access:           cfg.services,
+		DynamicAccess:    cfg.services,
+		Presence:         cfg.services,
+		Restrictions:     cfg.services,
+		Apps:             cfg.services,
+		Databases:        cfg.services,
+		AppSession:       cfg.services,
+		SnowflakeSession: cfg.services,
+		WindowsDesktops:  cfg.services,
+		WebSession:       cfg.services.WebSessions(),
+		WebToken:         cfg.services.WebTokens(),
+		Component:        teleport.Component(append(cfg.cacheName, process.id, teleport.ComponentCache)...),
+		MetricComponent:  teleport.Component(append(cfg.cacheName, teleport.ComponentCache)...),
 	}))
 }
 
@@ -2024,6 +2028,8 @@ func (process *TeleportProcess) initSSH() error {
 			return trace.Wrap(err)
 		}
 
+		storagePresence := local.NewPresenceService(process.storage)
+
 		s, err = regular.New(cfg.SSH.Addr,
 			cfg.Hostname,
 			[]ssh.Signer{conn.ServerIdentity.KeySigner},
@@ -2053,6 +2059,8 @@ func (process *TeleportProcess) initSSH() error {
 			regular.SetLockWatcher(lockWatcher),
 			regular.SetX11ForwardingConfig(cfg.SSH.X11),
 			regular.SetConnectedProxyGetter(proxyGetter),
+			regular.SetCreateHostUser(!cfg.SSH.DisableCreateHostUser),
+			regular.SetStoragePresenceService(storagePresence),
 		)
 		if err != nil {
 			return trace.Wrap(err)
@@ -3078,26 +3086,21 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 				NewCachingAccessPoint:         process.newLocalCacheForRemoteProxy,
 				NewCachingAccessPointOldProxy: process.newLocalCacheForOldRemoteProxy,
 				Limiter:                       reverseTunnelLimiter,
-				DirectClusters: []reversetunnel.DirectCluster{
-					{
-						Name:   conn.ServerIdentity.Cert.Extensions[utils.CertExtensionAuthority],
-						Client: conn.Client,
-					},
-				},
-				KeyGen:               cfg.Keygen,
-				Ciphers:              cfg.Ciphers,
-				KEXAlgorithms:        cfg.KEXAlgorithms,
-				MACAlgorithms:        cfg.MACAlgorithms,
-				DataDir:              process.Config.DataDir,
-				PollingPeriod:        process.Config.PollingPeriod,
-				FIPS:                 cfg.FIPS,
-				Emitter:              streamEmitter,
-				Log:                  process.log,
-				LockWatcher:          lockWatcher,
-				PeerClient:           peerClient,
-				NodeWatcher:          nodeWatcher,
-				CertAuthorityWatcher: caWatcher,
-				CircuitBreakerConfig: process.Config.CircuitBreakerConfig,
+				KeyGen:                        cfg.Keygen,
+				Ciphers:                       cfg.Ciphers,
+				KEXAlgorithms:                 cfg.KEXAlgorithms,
+				MACAlgorithms:                 cfg.MACAlgorithms,
+				DataDir:                       process.Config.DataDir,
+				PollingPeriod:                 process.Config.PollingPeriod,
+				FIPS:                          cfg.FIPS,
+				Emitter:                       streamEmitter,
+				Log:                           process.log,
+				LockWatcher:                   lockWatcher,
+				PeerClient:                    peerClient,
+				NodeWatcher:                   nodeWatcher,
+				CertAuthorityWatcher:          caWatcher,
+				CircuitBreakerConfig:          process.Config.CircuitBreakerConfig,
+				LocalAuthAddresses:            utils.NetAddrsToStrings(process.Config.AuthServers),
 			})
 		if err != nil {
 			return trace.Wrap(err)
@@ -3289,11 +3292,12 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 		AuthClient:          conn.Client,
 		AccessPoint:         accessPoint,
 		HostSigner:          conn.ServerIdentity.KeySigner,
-		LocalCluster:        conn.ServerIdentity.Cert.Extensions[utils.CertExtensionAuthority],
+		LocalCluster:        clusterName,
 		KubeDialAddr:        utils.DialAddrFromListenAddr(kubeDialAddr(cfg.Proxy, clusterNetworkConfig.GetProxyListenerMode())),
 		ReverseTunnelServer: tsrv,
 		FIPS:                process.Config.FIPS,
 		Log:                 rcWatchLog,
+		LocalAuthAddresses:  utils.NetAddrsToStrings(process.Config.AuthServers),
 	})
 	if err != nil {
 		return trace.Wrap(err)
@@ -3422,6 +3426,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 				MatchFunc: alpnproxy.MatchByProtocol(
 					alpncommon.ProtocolMongoDB,
 					alpncommon.ProtocolRedisDB,
+					alpncommon.ProtocolSnowflake,
 					alpncommon.ProtocolSQLServer),
 			})
 		}
@@ -3488,7 +3493,7 @@ func (process *TeleportProcess) initProxyEndpoint(conn *Connector) error {
 
 	var alpnServer *alpnproxy.Proxy
 	if !cfg.Proxy.DisableTLS && !cfg.Proxy.DisableALPNSNIListener && listeners.web != nil {
-		authDialerService := alpnproxyauth.NewAuthProxyDialerService(tsrv, accessPoint)
+		authDialerService := alpnproxyauth.NewAuthProxyDialerService(tsrv, clusterName, utils.NetAddrsToStrings(process.Config.AuthServers))
 		alpnRouter.Add(alpnproxy.HandlerDecs{
 			MatchFunc:           alpnproxy.MatchByALPNPrefix(string(alpncommon.ProtocolAuth)),
 			HandlerWithConnInfo: authDialerService.HandleConnection,
@@ -4090,6 +4095,7 @@ func (process *TeleportProcess) initAuthStorage() (bk backend.Backend, err error
 	reporter, err := backend.NewReporter(backend.ReporterConfig{
 		Component: teleport.ComponentBackend,
 		Backend:   backend.NewSanitizer(bk),
+		Tracer:    process.TracingProvider.Tracer(teleport.ComponentBackend),
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -4192,6 +4198,10 @@ func validateConfig(cfg *Config) error {
 
 	if cfg.Console == nil {
 		cfg.Console = io.Discard
+	}
+
+	if cfg.Log == nil {
+		cfg.Log = logrus.StandardLogger()
 	}
 
 	if len(cfg.AuthServers) == 0 {
