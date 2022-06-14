@@ -28,18 +28,21 @@ import (
 	"github.com/gravitational/teleport/lib/tbot/testhelpers"
 	"github.com/gravitational/teleport/lib/utils"
 	libutils "github.com/gravitational/teleport/lib/utils"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
 
 func rotate(
-	ctx context.Context, t *testing.T, client auth.ClientI, phase string,
+	ctx context.Context, t *testing.T, log logrus.FieldLogger, client auth.ClientI, phase string,
 ) {
 	t.Helper()
+	log.Infof("Triggering rotation: %s", phase)
 	err := client.RotateCertAuthority(ctx, auth.RotateRequest{
 		Mode:        "manual",
 		TargetPhase: phase,
 	})
 	require.NoError(t, err)
+	log.Info("Triggered rotation: %s", phase)
 }
 
 func setupServerForCARotationTest(ctx context.Context, log utils.Logger, t *testing.T, wg *sync.WaitGroup) (func() auth.ClientI, *config.FileConfig) {
@@ -134,27 +137,27 @@ func TestBot_Run_CARotation(t *testing.T) {
 	initialCAs := [][]byte{}
 	copy(initialCAs, b.ident().TLSCACertsBytes)
 
-	// Fully rotate
-	rotate(ctx, t, client(), "init")
+	// Fully
+	rotate(ctx, t, log, client(), "init")
 	// TODO: These sleeps allow the client time to rotate. They could be
 	// replaced if tbot emitted a CA rotation/renewal event.
 	time.Sleep(time.Second * 30)
 	_, err := b.client().Ping(ctx)
 	require.NoError(t, err)
 
-	rotate(ctx, t, client(), "update_clients")
+	rotate(ctx, t, log, client(), "update_clients")
 	time.Sleep(time.Second * 30)
 	// Ensure both sets of CA certificates are now available locally
 	require.Len(t, b.ident().TLSCACertsBytes, 4)
 	_, err = b.client().Ping(ctx)
 	require.NoError(t, err)
 
-	rotate(ctx, t, client(), "update_servers")
+	rotate(ctx, t, log, client(), "update_servers")
 	time.Sleep(time.Second * 30)
 	_, err = b.client().Ping(ctx)
 	require.NoError(t, err)
 
-	rotate(ctx, t, client(), "standby")
+	rotate(ctx, t, log, client(), "standby")
 	time.Sleep(time.Second * 30)
 	_, err = b.client().Ping(ctx)
 	require.NoError(t, err)
