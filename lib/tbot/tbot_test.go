@@ -42,7 +42,7 @@ func rotate(
 	require.NoError(t, err)
 }
 
-func setupServerForCARotationTest(ctx context.Context, t *testing.T, wg *sync.WaitGroup) (func() auth.ClientI, *config.FileConfig) {
+func setupServerForCARotationTest(ctx context.Context, log utils.Logger, t *testing.T, wg *sync.WaitGroup) (func() auth.ClientI, *config.FileConfig) {
 	fc, fds := testhelpers.DefaultConfig(t)
 
 	// Patch until https://github.com/gravitational/teleport/issues/13443
@@ -52,7 +52,7 @@ func setupServerForCARotationTest(ctx context.Context, t *testing.T, wg *sync.Wa
 	cfg := service.MakeDefaultConfig()
 	require.NoError(t, config.ApplyFileConfig(fc, cfg))
 	cfg.FileDescriptors = fds
-	cfg.Log = utils.NewLoggerForTests()
+	cfg.Log = log
 
 	cfg.CachePolicy.Enabled = false
 	cfg.Proxy.DisableWebInterface = true
@@ -103,20 +103,21 @@ func TestBot_Run_CARotation(t *testing.T) {
 
 	// wg and context manage the cancellation of long running processes e.g
 	// teleport and tbot in the test.
+	log := libutils.NewLoggerForTests()
 	wg := &sync.WaitGroup{}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
-		t.Log("Shutting down long running test processes..")
+		log.Infof("Shutting down long running test processes..")
 		cancel()
 		wg.Wait()
 	})
 
-	client, fc := setupServerForCARotationTest(ctx, t, wg)
+	client, fc := setupServerForCARotationTest(ctx, log, t, wg)
 
 	// Make and join a new bot instance.
 	botParams := testhelpers.MakeBot(t, client(), "test", "access")
 	botConfig := testhelpers.MakeMemoryBotConfig(t, fc, botParams)
-	b := New(botConfig, libutils.NewLoggerForTests(), make(chan struct{}))
+	b := New(botConfig, log, make(chan struct{}))
 
 	wg.Add(1)
 	go func() {
